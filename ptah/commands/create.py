@@ -3,6 +3,7 @@ from pathlib import Path
 from bullet import Bullet, YesNo
 from shutil import rmtree, copy
 from ..core.exceptions import InvalidBlueprint
+from ..core.context_builder import ContextBuilder
 from jinja2 import Environment, FileSystemLoader
 
 import sys
@@ -15,6 +16,8 @@ class CreateCommand(Command):
     arguments = [Parameter("name"), Option(["--blueprint", "-b"], default=None)]
 
     ctx = {}
+    builder = ContextBuilder()
+    jinja_env = None
 
     def main(self):
         blueprint_folder = self.get_blueprint_folder()
@@ -22,12 +25,53 @@ class CreateCommand(Command):
         if not blueprint_folder.exists():
             raise InvalidBlueprint(f"{blueprint_folder} doesn't exist")
 
-        self.ctx["blueprint_folder"] = blueprint_folder
-
         target_folder = Path(".") / self.arguments.name
 
+        self.ctx["blueprint_folder"] = blueprint_folder
         self.ctx["folder_name"] = self.arguments.name
         self.ctx["target_folder"] = target_folder
+
+        structure_file_path = self.find_first_valid_path((
+            blueprint_folder / "structure.yml.jinja",
+            blueprint_folder / "structure.yaml.jinja",
+            blueprint_folder / "structure.yml",
+            blueprint_folder / "structure.yaml",
+        ))
+
+        manifest_file_path = self.find_first_valid_path((
+            blueprint_folder / "manifest.yml",
+            blueprint_folder / "manifest.yaml",
+        ))
+
+        if manifest_file_path is None:
+            raise InvalidBlueprint(f"{blueprint_folder}/manifest.yml doesn't exist")
+        
+        if structure_file_path is None:
+            raise InvalidBlueprint(f"Neither {blueprint_folder}/structure.yml nor {blueprint_folder}/structure.yml {blueprint_folder}/structure.yml.jinja exist")
+
+        self.create_target_folder()
+
+        manifest = yaml.safe_load(manifest_file_path.read_text())
+
+        utils_path = blueprint_folder / "utils.py"
+        if utils_path.exists():
+            utils_path = str(utils_path.resolve())
+        else:
+            utils_path = None
+
+        self.ctx.update(self.builder.build_context(manifest, utils_path)) 
+        self.jinja_env = self.create_jinja_env()
+
+        structure_content = structure_file_path.read_text()
+        if structure_file_path.suffix == ".jinja":
+            structure_content = self.jinja_env.from_string(structure_content).render()
+        
+        structure = yaml.safe_load(structure_file_path.read_text())
+
+        self.create_structure(structure, target_folder, blueprint_folder)
+
+    def create_target_folder(self):
+        target_folder = self.ctx["target_folder"]
 
         if target_folder.exists():
             should_continue = YesNo(
@@ -40,28 +84,6 @@ class CreateCommand(Command):
             rmtree(target_folder)
 
         target_folder.mkdir()
-
-        structure_file_paths = (
-            blueprint_folder / "structure.yml.jinja",
-            blueprint_folder / "structure.yaml.jinja",
-            blueprint_folder / "structure.yml",
-            blueprint_folder / "structure.yaml",
-        )
-
-        structure_file_path = None
-
-        i = 0
-        while structure_file_path is None and i < len(structure_file_paths):
-            if structure_file_paths[i].exists():
-                structure_file_path = structure_file_paths[i]
-            i += 1
-
-        if structure_file_path is None:
-            raise InvalidBlueprint(f"{blueprint_folder}/structure.yml doesn't exist")
-
-        structure = yaml.safe_load(structure_file_path.read_text())
-
-        self.create_structure(structure, target_folder, blueprint_folder)
 
     def get_blueprint_folder(self):
         if self.arguments.blueprint:
@@ -79,10 +101,22 @@ class CreateCommand(Command):
 
         return available_blueprints[ui.launch()]
 
-    def create_jinja_env(self, blueprint_folder: Path):
-        env = Environment(loader=FileSystemLoader(str(blueprint_folder)))
+    def create_jinja_env(self):
+        env = Environment(loader=FileSystemLoader(str(self.ctx["blueprint_folder"])))
         env.globals = self.ctx
         return env
+
+    def find_first_valid_path(self, possible_paths):
+        valid_path = None
+
+        i = 0
+        while valid_path is None and i < len(possible_paths):
+            if possible_paths[i].exists():
+                valid_path = possible_paths[i]
+            i += 1
+
+        return valid_path
+
 
     def is_empty_directory_marker(self, value):
         return isinstance(value, list) or isinstance(value, tuple) or value is None
@@ -97,11 +131,10 @@ class CreateCommand(Command):
             elif (self.is_empty_directory_marker(value)):  # Directory
                 new_path.mkdir()
             elif isinstance(value, str):  # File
-                source_path = blueprint_folder / "src" /value
+                source_path = blueprint_folder / "src" / value
                 if value.endswith(".jinja"):  # Template
                     new_path.touch()
-                    env = self.create_jinja_env(blueprint_folder)
-                    template = env.get_template(f"src/{value}")
+                    template = self.jinja_env.get_template(f"src/{value}")
                     new_path.write_text(template.render())
                 else:
                     copy(source_path, new_path)

@@ -1,6 +1,5 @@
 class PtahError(Exception):
     pass
 
-
-class InvalidBlueprint(Exception):
+class InvalidBlueprint(PtahError):
     pass
