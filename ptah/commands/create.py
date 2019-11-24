@@ -97,10 +97,11 @@ class CreateCommand(Command):
         target_folder.mkdir()
 
     def get_blueprint_folder(self):
-        if self.arguments.blueprint:
-            return (Path(self.config["library_folder"]) / self.arguments.blueprint).expanduser()
+        library_folder = Path(self.config.get("library_folder", "~/.ptah/library/")).expanduser()
 
-        library_folder = Path(self.config["library_folder"]).expanduser()
+        if self.arguments.blueprint:
+            return library_folder / self.arguments.blueprint
+
         available_blueprints = {f" {path.name}": path for path in library_folder.iterdir()}
         ui = Bullet(prompt="Choose your blueprint:", choices=list(available_blueprints.keys()))
 
